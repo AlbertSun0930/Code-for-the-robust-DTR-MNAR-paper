@@ -1,0 +1,202 @@
+---
+title: "Tutorial for the implement of the CFBL and the ACFBL methods in the single-stage scenario"
+author: "Jian Sun"
+output:
+  html_document: null
+  toc: yes
+  pdf_document: default
+---
+
+
+This is a quick tutorial to demonstrate how to implement the covariate functional balancing learning (CFBL) and the augmented covariate functional balancing learning (ACFBL) approaches proposed by 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates' in the single-stage scenario.
+
+
+
+
+# Preliminary
+This turtorial is based on R version 4.3.2. It requires the R packages 'MASS', 'gss', 'ATE.ncb', and 'optimization'. 
+
+```{r warning=FALSE, message=FALSE, include=FALSE}
+library(optimization)
+library(MASS)
+library(gss)
+library(randomForest)
+library("ATE.ncb")
+library(e1071)
+logisticloss <- function(X){
+  return(log(1+exp(-X)))
+}
+sgn <- function(X){
+  ifelse(X==0,1,X/abs(X))
+}
+expit <- function(x){
+  return(exp(x)/(1+exp(x)))
+}
+```
+
+# Data Generation
+
+A dataset was simulated based on the data generating mechanism described in the Simulation 1 of 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'. 
+There were two covariates $X_{1,1}$ and $X_{1,2}$. $X_{1,2}$ was partially observed and its missingness indicator is $R_1$.
+The missing probability models are as follows:
+$$
+P(R_1=1) = [1+\exp(-3+X_{1,2})]^{-1}
+$$
+In such cases, $R_1$  was only directly associated with the value of $X_{1,2}$, thus $X_{1,2}$ was nonignorably missing, and the future-independent missingness assumption held.
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(3)
+N=2000
+X1 <- mvrnorm(N,c(0,0),matrix(c(1,0.5,1,0.5),2,2))
+X11 <- X1[,1]
+X12 <- runif(N,0,2)
+P_R1 <- 1/(1+exp(-3+X12))
+R1 <- ifelse(P_R1>runif(N),1,0)
+P_A1 <- expit(2*X11^2-1*X12-R1)
+A1 <- ifelse(P_A1>runif(N),1,-1)
+Y1 <- -2+2*A1*(-X12+1)+2*X11^2+X12+rnorm(N,0,1)
+```
+
+We simulated 2000 patients. Below are the first six rows of the simulated data.
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+head(data.frame(cbind(X11,X12,R1,A1,Y1)))
+```
+
+
+# Estimation
+
+Since the future-independent missingness assumption holds in this simulated data, we can obtain unbiased estimates of optimal treatment regimes through complete cases.
+
+
+## Estimation of the covariate funtional balancing weights 
+We estimate the covariate functional balancing weights ($\hat{w}^b_1$) with R package "ATE.ncb" (https://github.com/raymondkww/ATE.ncb).
+```{r warning=FALSE, message=FALSE}
+FA1t <- ifelse(A1>0,A1,0)
+FA1t <- FA1t[R1==1]
+X = cbind(X11,X12)[R1==1,]
+Xstd <- transform.sob(X)$Xstd # standardize X to [0,1]^p
+K <- getGram(Xstd) # get Gram matrix using Sobolev kernel
+nlam <- 20
+lams <- exp(seq(log(1e-8), log(1), len=nlam)) # tuning parameter selection
+# compute weights for A=1
+fit11 <- ATE.ncb.SN(FA1t, K, lam1s=lams,traceit = FALSE)$w
+# compute weights for A=0
+fit10 <- ATE.ncb.SN((1-FA1t), K, lam1s=lams,traceit = FALSE)$w
+WA1 <- ifelse(A1[R1==1]==1,fit11,fit10)
+```
+
+## Estimation of the outcome mean regression model
+We estimate the outcome mean regression models for different treatment groups ($\hat{Q}_{1,a_1}(\boldsymbol{h}_1)$) using smoothing spline method with R package gss. Denote $\hat{Q}_{1}(\boldsymbol{h}_1,a_1) = \hat{Q}_{1,a_1}(\boldsymbol{h}_1)$.
+```{r warning=FALSE, message=FALSE}
+CCdata <- data.frame(cbind(A1,X11,X12,Y1)[R1==1,])
+Kfit <- ssanova(Y1~A1+X11+X12, data = CCdata)
+CCdata$A1 = -1
+m10K <- predict(Kfit, newdata = CCdata )
+CCdata$A1 = 1
+m11K <- predict(Kfit, newdata = CCdata )
+```
+
+## Construction of the CFBL and the ACFBL estimators
+Denote $$\hat{\Omega}^{BW}_{1,i}(a_1) = \hat{w}^{b}_{1,i}\mathbb{I} (A_{1,i}=a_1)y_{1,i},\\
+\hat{\Omega}^{ABW}_{1,i}(a_1) = \hat{w}^b_{1,i}\mathbb{I}(A_{1,i}=a_1)y_{1,i} - \{\hat{w}^b_{1,i}\mathbb{I}(A_{1,i}=a_1)-1\} \hat{Q}_{1}(\boldsymbol{h}_{1,i},a_1), $$
+for $a_1\in \{-1,1\}$.
+```{r warning=FALSE, message=FALSE}
+Omega11BW = (A1[R1==1]+1)/2*Y1[R1==1]*WA1
+Omega10BW = (1-A1[R1==1])/2*Y1[R1==1]*WA1
+
+CCdata$A1 = -1
+m10K <- predict(Kfit, newdata = CCdata )
+CCdata$A1 = 1
+m11K <- predict(Kfit, newdata = CCdata )
+Omega11ABW = (A1[R1==1]+1)/2*Y1[R1==1]*WA1-((A1[R1==1]+1)/2*WA1-1)*m11K
+Omega10ABW = (1-A1[R1==1])/2*Y1[R1==1]*WA1-(1-(A1[R1==1])/2*WA1-1)*m10K
+```
+
+The CFBL and the AFBL estimators can be obtained by minimizing 
+$$
+\hat{E}_{i \in S_1}\left( |\hat{\Omega}_{1,i}(1)|\phi\left[ \text{sgn}\{\hat{\Omega}_{1,i}(1)\}g_1(\boldsymbol{h}_{1,i})\right] + |\hat{\Omega}_{1,i}(-1)|\phi\left[ -\text{sgn}\{\hat{\Omega}_{1,i}(-1)\}g_1(\boldsymbol{h}_{1,i})\right ] \right) +\lambda^{opt}_1 \|g_1\|^2,
+$$
+where $\hat{\Omega}_{1,i}(1)$ can be $\hat{\Omega}^{BW}_{1,i}(1)$ or $\hat{\Omega}^{ABW}_{1,i}(1)$, respectively.
+For the surrogate function $\phi(x)$, we take the logistic loss function $\phi(x) = \log(1+e^{-x})$.
+
+
+We select the tuning parameter $\lambda_1^{opt}$ using 5-fold cross validation.
+```{r warning=FALSE, message=FALSE}
+X = cbind(1,X12)[R1==1,]
+samplesize = dim(X)[1]
+tp_rec = rep(0,10)
+for (i in 1:10){
+  tp = 2^(i-5)
+  val_rec= rep(0,5)
+  for (j in 1:5) {
+    valnum = (ceiling((j-1)*samplesize/5)):(ceiling(j*samplesize/5))
+    trainnum = setdiff(1:samplesize, valnum)
+    CFBLfun1 = function(eta){
+    mean(abs(Omega11BW[trainnum])*logisticloss(sgn(Omega11BW[trainnum])*X[trainnum,]%*%eta)+abs(Omega10BW[trainnum])*logisticloss(-sgn(Omega10BW[trainnum])*X[trainnum,]%*%eta) + tp*(X[trainnum,]%*%eta)^2 )}
+    CFBLcoe1 <- optim(par = c(1,-1),CFBLfun1,control = list(maxit = 2000))$par
+    AoptCFBL <- ifelse(CFBLcoe1[1]+CFBLcoe1[2]*X12[R1==1][valnum]>0,1,-1)
+    val_rec[j] = mean(-2+2*AoptCFBL*(-X12[R1==1][valnum]+1)+2*X11[valnum]^2+X12[R1==1][valnum])
+  }
+  tp_rec[i] = mean(val_rec)
+}
+2^(which.max(tp_rec)-5)
+```
+The selected tuning parameter $\lambda_1^{opt}$ for the CFBL method is 0.5.
+
+```{r warning=FALSE, message=FALSE}
+X = cbind(1,X12)[R1==1,]
+samplesize = dim(X)[1]
+tp_rec = rep(0,10)
+for (i in 1:10){
+  tp = 2^(i-5)
+  val_rec= rep(0,5)
+  for (j in 1:5) {
+    valnum = (ceiling((j-1)*samplesize/5)):(ceiling(j*samplesize/5))
+    trainnum = setdiff(1:samplesize, valnum)
+    ACFBLfun1 = function(eta){
+    mean(abs(Omega11ABW[trainnum])*logisticloss(sgn(Omega11ABW[trainnum])*X[trainnum,]%*%eta)+abs(Omega10ABW[trainnum])*logisticloss(-sgn(Omega10ABW[trainnum])*X[trainnum,]%*%eta) + tp*(X[trainnum,]%*%eta)^2 )}
+    ACFBLcoe1 <- optim(par = c(1,-1),ACFBLfun1,control = list(maxit = 2000))$par
+    AoptACFBL <- ifelse(ACFBLcoe1[1]+ACFBLcoe1[2]*X12[R1==1][valnum]>0,1,-1)
+    val_rec[j] = mean(-2+2*AoptACFBL*(-X12[R1==1][valnum]+1)+2*X11[valnum]^2+X12[R1==1][valnum])
+  }
+  tp_rec[i] = mean(val_rec)
+}
+2^(which.max(tp_rec)-5)
+```
+The selected tuning parameter $\lambda_1^{opt}$ for the ACFBL method is 2.
+
+The CFBL and the ACFBL estimators are obtained with the selected tuning parameter $\lambda_1^{opt}$.
+```{r warning=FALSE, message=FALSE}
+CFBLfun1 = function(eta){
+  mean(abs(Omega11BW)*logisticloss(sgn(Omega11BW)*X%*%eta)+abs(Omega10BW)*logisticloss(-sgn(Omega10BW)*X%*%eta) + 2*(X%*%eta)^2 )}
+CFBLcoe1 <- optim(par = c(1,-1),CFBLfun1,control = list(maxit = 2000))$par
+CFBLcoe1
+```
+For the CFBL method, the estimated optimal DTR is $\mathbb{I}(0.3652704-0.3632035 x_{1,2}\geq 0)$.
+
+```{r warning=FALSE, message=FALSE}
+ACFBLfun1 = function(eta){
+mean(abs(Omega11ABW[trainnum])*logisticloss(sgn(Omega11ABW[trainnum])*X[trainnum,]%*%eta)+abs(Omega10ABW[trainnum])*logisticloss(-sgn(Omega10ABW[trainnum])*X[trainnum,]%*%eta) + 0.5*(X[trainnum,]%*%eta)^2 )}
+ACFBLcoe1 <- optim(par = c(1,-1),ACFBLfun1,control = list(maxit = 2000))$par
+ACFBLcoe1
+```
+For the ACFBL method, the estimated optimal DTR is $\mathbb{I}(0.7655514-0.7777297 x_{1,2}\geq 0)$
+
+
+# Evaluation of the estimated optimal DTR
+
+We evaluate the estimated optimal DTRs through the correct classification rate and the value of the estimated DTR.
+```{r warning=FALSE, message=FALSE}
+A1optCFBL <- ifelse(CFBLcoe1[1] + CFBLcoe1[2]*X12 > 0,1,-1)
+A1optACFBL <- ifelse(ACFBLcoe1[1] + ACFBLcoe1[2]*X12 > 0,1,-1)
+TA1opt <- ifelse(1-X12>0,1,-1)
+sum(A1optCFBL == TA1opt)/N
+sum(A1optACFBL == TA1opt)/N
+```
+The correct classification rates in this example are $99.75\%$ and $99.3\%$ for the CFBL and the ACFBL methods, respectively.
+
+```{r warning=FALSE, message=FALSE}
+mean(-2+2*A1optCFBL*(-X12+1)+2*X11^2+X12)
+mean(-2+2*A1optACFBL*(-X12+1)+2*X11^2+X12)
+```
+The values of the estimated DTR in this example are 1.958239 and 1.958101 for the CFBL and the ACFBL methods, respectively.

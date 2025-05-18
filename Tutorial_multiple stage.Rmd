@@ -1,0 +1,307 @@
+---
+title: "Tutorial for the implement of the CFBL and the ACFBL methods in the single-stage scenario"
+author: "Jian Sun"
+output:
+  html_document: null
+  toc: yes
+  pdf_document: default
+---
+
+
+This is a quick tutorial to demonstrate how to implement the augmented covariate functional balancing learning (ACFBL) approaches proposed by 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates' in the multiple-stage scenario.
+
+
+
+
+# Preliminary
+This turtorial is based on R version 4.3.2. It requires the R packages 'MASS', 'gss', 'ATE.ncb', and 'optimization'. 
+
+```{r warning=FALSE, message=FALSE, include=FALSE}
+library(optimization)
+library(MASS)
+library(gss)
+library(randomForest)
+library("ATE.ncb")
+library(e1071)
+logisticloss <- function(X){
+  return(log(1+exp(-X)))
+}
+sgn <- function(X){
+  ifelse(X==0,1,X/abs(X))
+}
+expit <- function(x){
+  return(exp(x)/(1+exp(x)))
+}
+```
+
+# Data Generation
+
+A dataset was simulated based on the data generating mechanism described in the Simulation 2 of 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'. 
+There are two stages and two variables in each stage, denoted as {$X_{i,1},X_{i,2},A_{i},Y_{i}$} for stage $i=1,2$. $X_{1,2}$ and $X_{2,2}$ are partially observed, and their missing indicators are $R_1$ and $R_2$, respectively. The missing probability models are as follows:
+$$
+P(R_1=1) = [1+\exp(-3+X_{1,2})]^{-1}\\
+P(R_2=1) = [1+\exp(-1+A_1-Y_1+2X_{2,1}^2-X_{2,2})]^{-1}
+$$
+In such cases, $R_1$ is directly related to $X_{1,2}$, and $R_2$ is directly related to $X_{2,2}$, indicating that $X_{1,2}$ and $X_{2,2}$ are missing not at random. The assumption of future-independent missingness also holds in this scenario. The missing indicator for the pseudo-outcome in stage 1 is also $R_2$. Given that $Y^{pse}_1 = -2-A_1+X_{2,2}+2X_{1,2}-2X_{2,1}^2 + Y_1$, $P(R_2=1)$ is also equal to $[1+\exp(-1+2X_{1,2}-Y^{pse}_1)]^{-1}$.
+
+
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+set.seed(3)
+N=2000
+X1 <- mvrnorm(N,c(0,0),matrix(c(1,0.5,1,0.5),2,2))
+X11 <- X1[,1]
+X21 <- X1[,2]
+X12 <- runif(N,0,2)
+X22 <- runif(N,0,2) 
+P_R1 <- 1/(1+exp(-3+X12))
+R1 <- ifelse(P_R1>runif(N),1,0)
+P_A1 <- expit(-1+2*X11^2-X12^2-R1)
+A1 <- ifelse(P_A1>runif(N),1,-1)
+Y1 <- -2+2*A1*(-X12+1.5)+2*X11^2+X12+rnorm(N,0,1)
+P_R2 <- 1/(1+exp(-2+A1-Y1+2*X21^2-1*X22))
+R2 <- ifelse(P_R2>runif(N),1,0)
+P_A2 <- expit(1-X21^2+X22-R2)
+A2 <- ifelse(P_A2>runif(N),1,-1)
+Y2 <- -3+A2*(X22-A1+1)+2*X12-2*X21^2+rnorm(N,0,1)
+```
+
+We simulated 2000 patients. Below are the first six rows of the simulated data.
+```{r warning=FALSE, message=FALSE, echo=FALSE}
+head(data.frame(cbind(X11,X12,R1,A1,Y1,X21,X22,R2,A2,Y2)))
+```
+
+
+# Estimation
+
+## Stage 2
+
+Since the future-independent missingness assumption holds in stage 2 of this simulated data, we can obtain unbiased estimates of optimal treatment regimes through complete cases.
+
+
+### Estimation of the covariate funtional balancing weights at stage 2
+We estimate the covariate functional balancing weights ($\hat{w}^b_1$) with R package "ATE.ncb" (https://github.com/raymondkww/ATE.ncb).
+```{r warning=FALSE, message=FALSE}
+CCdata2 <- data.frame(cbind(A1,X12,A2,X21,X22,Y2)[R1+R2==2,])
+Kfit2 <- ssanova(Y2~A2*A1+X12+X21+A2*X22, data = CCdata2)
+CCdata2$A2 = -1
+m20K <- predict(Kfit2, newdata = CCdata2 )
+CCdata2$A2 = 1
+m21K <- predict(Kfit2, newdata = CCdata2 )
+FA2t <- ifelse(A2>0,A2,0)
+FA2t <- FA2t[R1+R2==2]
+X = cbind(X12,X21,X22)[R1+R2==2,]
+# Sobolev kernel
+Xstd <- transform.sob(X)$Xstd # standardize X to [0,1]^p
+K <- getGram(Xstd) # get Gram matrix using Sobolev kernel
+nlam <- 20
+lams <- exp(seq(log(1e-10), log(1), len=nlam))
+# compute weights for A=1
+fit21 <- ATE.ncb.SN(FA2t, K, lam1s=lams,traceit = FALSE)$w
+# compute weights for A=0
+fit20 <- ATE.ncb.SN((1-FA2t), K, lam1s=lams,traceit = FALSE)$w
+WA2 <- ifelse(A2[R1+R2==2]==1,fit21,fit20)
+```
+
+### Estimation of the outcome mean regression model at stage 2
+We estimate the outcome mean regression models for different treatment groups ($\hat{Q}_{2,a_2}(\boldsymbol{h}_2)$) using smoothing spline method with R package gss. Denote $\hat{Q}_{2}(\boldsymbol{h}_2,a_2) = \hat{Q}_{2,a_2}(\boldsymbol{h}_2)$.
+```{r warning=FALSE, message=FALSE}
+CCdata2 <- data.frame(cbind(A1,X12,A2,X21,X22,Y2)[R1+R2==2,])
+Kfit2 <- ssanova(Y2~A2*A1+X12+X21+A2*X22, data = CCdata2)
+CCdata2$A2 = -1
+m20K <- predict(Kfit2, newdata = CCdata2 )
+CCdata2$A2 = 1
+m21K <- predict(Kfit2, newdata = CCdata2 )
+```
+
+### Construction of the ACFBL estimator at stage 2
+Denote $$
+\hat{\Omega}_{2,i}(a_2) = \hat{w}^b_{2,i}\mathbb{I}(A_{2,i}=a_2)y_{2,i} - \{\hat{w}^b_{2,i}\mathbb{I}(A_{2,i}=a_2)-1\} \hat{Q}_{2}(\boldsymbol{h}_{2,i},a_2), $$
+for $a_2 \in \{-1,1\}$.
+```{r warning=FALSE, message=FALSE}
+Omega21 = (A2[R1+R2==2]+1)/2*Y2[R1+R2==2]*WA2-((A2[R1+R2==2]+1)*WA2/(2)-1)*m21K
+Omega20 = (1-A2[R1+R2==2])/2*Y2[R1+R2==2]*WA2-((1-A2[R1+R2==2])*WA2/(2)-1)*m20K
+```
+
+The AFBL estimators can be obtained by minimizing 
+$$
+\hat{E}_{i \in S_2}\left( |\hat{\Omega}_{2,i}(1)|\phi\left[ \text{sgn}\{\hat{\Omega}_{2,i}(1)\}g_2(\boldsymbol{h}_{2,i})\right] + |\hat{\Omega}_{2,i}(-1)|\phi\left[ -\text{sgn}\{\hat{\Omega}_{2,i}(-1)\}g_2(\boldsymbol{h}_{1,i})\right ] \right) +\lambda^{opt}_2 \|g_2\|^2,
+$$
+For the surrogate function $\phi(x)$, we take the logistic loss function $\phi(x) = \log(1+e^{-x})$.
+
+
+We select the tuning parameter $\lambda_2^{opt}$ using 5-fold cross validation.
+```{r warning=FALSE, message=FALSE}
+X2 = cbind(1,A1,X22)[(R1+R2)==2,]
+samplesize2 = dim(X2)[1]
+tp_rec = rep(0,10)
+for (i in 1:10){
+  tp = 2^(i-5)
+  val_rec= rep(0,5)
+  for (j in 1:5) {
+    valnum = (ceiling((j-1)*samplesize2/5)):(ceiling(j*samplesize2/5))
+    trainnum = setdiff(1:samplesize2, valnum)
+    ACFBLfun2 = function(eta){
+    mean(abs(Omega21[trainnum])*logisticloss(sgn(Omega21[trainnum])*X2[trainnum,]%*%eta)+abs(Omega20[trainnum])*logisticloss(-sgn(Omega20[trainnum])*X2[trainnum,]%*%eta) + tp*(X2[trainnum,]%*%eta)^2 )}
+    ACFBLcoe2 <- optim(par = c(1,-1,1),ACFBLfun2,control = list(maxit = 2000))$par
+    A2optACFBL <- ifelse(ACFBLcoe2[1]+ACFBLcoe2[2]*A1[R1+R2==2][valnum]+ACFBLcoe2[3]*X22[R1+R2==2][valnum]>0,1,-1)
+    val_rec[j] = mean(-3+A2optACFBL*(X22[R1+R2==2][valnum]-A1[R1+R2==2][valnum]+1)+2*X12[R1+R2==2][valnum]-2*X21[R1+R2==2][valnum]^2+Y1[R1+R2==2][valnum])
+  }
+  tp_rec[i] = mean(val_rec)
+}
+2^(which.max(tp_rec)-5)
+```
+The selected tuning parameter $\lambda_2^{opt}$  is 0.5.
+
+The stage-2 ACFBL estimator can be obtained with the selected tuning parameter $\lambda_2^{opt}$.
+```{r warning=FALSE, message=FALSE}
+ACFBLfun2 = function(eta){
+  mean(abs(Omega21)*logisticloss(sgn(Omega21)*X2%*%eta)+abs(Omega20)*logisticloss(-sgn(Omega20)*X2%*%eta) + 0.5*(X2%*%eta)^2 )}
+ACFBLcoe2 <- optim(par = c(1,-1,1),ACFBLfun2,control = list(maxit = 2000))$par
+ACFBLcoe2
+```
+The estimated optimal decision rule at stage 2 is $\mathbb{I}(0.4392279 -0.4427540 A_1 + 0.2993610 X_{2,2}\geq 0)$.
+
+
+
+## Stage 1
+
+The estimated pseudo-outcome at stage 1 is determined by the estimated outcome mean model at stage 2. Since the assumption of future-independent missingness holds, we can obtain unbiased estimates of the Q-function at stage 1 using the records where $R_1=1$. However, because $Y_{pse,1}$ is calculated based on $X_{2,2}$, it may still exhibit missing values when $R_1=0$. The missing indicator for $Y_{pse,1}$ is $\mathbb{I}(R_1+R_2 = 2)$. The first six rows of the variables considered for the stage 1 Q-function are listed below:
+
+```{r warning=FALSE, message=FALSE}
+A2optACFBL <- ifelse(ACFBLcoe2[1]+ACFBLcoe2[2]*A1+ACFBLcoe2[3]*X22>0,1,-1)
+CCdata2$A2 <- A2optACFBL[R1+R2==2]
+pseY1K <- rep(0,length(X11))
+pseY1K[R1+R2==2] <- predict(Kfit2, newdata = CCdata2 ) + Y1[R1+R2==2]
+pseR1 = ifelse(R1+R2==2,1,0)
+head(data.frame(cbind(X11,X12,A1,pseY1K,pseR1))[R1+R2==2,])
+
+```
+### Estimation of the pseudo-outcome missingness propensity model 
+
+To estimate the pseudo-outcome missingness propensity model, we should firstly get the kernel regression estimate of $\exp\{\eta_1(x_{1,2})\}$ for a given $\gamma_1$. 
+
+```{r warning=FALSE, message=FALSE}
+h <- 1.5*sd(X12[R1==1])*length(X12[R1==1])^(-1/3)
+expsuK <- function(vou,gamma){
+  n <- length(vou)
+  resu <- c()
+  for (i in 1:n) {
+    fzt <- sum((1-pseR1[R1==1]) * 1/h*dnorm((vou[i]-X12[R1==1])/h) )
+    fmt <- sum(pseR1[R1==1]*exp(gamma*pseY1K[R1==1])*1/h*dnorm((vou[i]-X12[R1==1])/h))
+    resu[i] <- fzt/fmt
+  }
+  resu
+}
+
+lossK <- function(gamma){
+  t1 <- mean(pseR1[R1==1]*(1+exp(gamma*pseY1K[R1==1])*expsuK(X12[R1==1],gamma))-1)
+  t2 <- mean(X11[R1==1]*pseR1[R1==1]*(1+exp(gamma*pseY1K[R1==1])*expsuK(X12[R1==1],gamma))-X11[R1==1])
+  t3 <- mean(Y1[R1==1]*pseR1[R1==1]*(1+exp(gamma*pseY1K[R1==1])*expsuK(X12[R1==1],gamma))-Y1[R1==1])
+  t1^2+t2^2+t3^2
+}
+startgamma=-1  #true gamma = -1
+gamma1K <- optim_nm(lossK, start = startgamma,exit=200,tol=1e-2)$par
+```
+
+
+### Estimation of the outcome mean models at stage 1
+
+We can obtain the estimated missingness propensity model with the estimated $\gamma_1$. And then use the inverse propensity weighting method to get the outcome mean models in stage 1.
+```{r warning=FALSE, message=FALSE}
+mwK = rep(0,sum(R1))
+mwK[pseR1[R1==1]==1] = (1+exp(gamma1K*pseY1K[R1+R2==2])*expsuK(X12[R1+R2==2],gamma1K))
+
+CCdata1 <- data.frame(cbind(A1,X11,X12,pseY1K)[R1==1,])
+Kfit1 <- ssanova(pseY1K~A1*X12+X11, data = CCdata1, w = mwK)
+CCdata1$A1 = -1
+m10K <- predict(Kfit1, newdata = CCdata1 )
+CCdata1$A1 = 1
+m11K <- predict(Kfit1, newdata = CCdata1 )
+```
+
+### Estimation of the covariate functional balancing weights at stage 1
+
+```{r warning=FALSE, message=FALSE}
+FA1t <- ifelse(A1>0,A1,0)
+FA1t <- FA1t[R1==1]
+X = cbind(X11,X12)[R1==1,]
+Xstd <- transform.sob(X)$Xstd # standardize X to [0,1]^p
+K <- getGram(Xstd) # get Gram matrix using Sobolev kernel
+nlam <- 20
+lams <- exp(seq(log(1e-8), log(1), len=nlam))
+# compute weights for T=1
+fit11 <- ATE.ncb.SN(FA1t, K, lam1s=lams,traceit = FALSE)$w
+# compute weights for T=0
+fit10 <- ATE.ncb.SN((1-FA1t), K, lam1s=lams,traceit = FALSE)$w
+WA1 <- ifelse(A1[R1==1]==1,fit11,fit10)
+```
+
+
+### Construction of the ACFBL estimator at stage 1
+
+Denote $$
+\hat{\Omega}_{1,i}(a_1) = \hat{w}^b_{1,i}\mathbb{I}(A_{1,i}=a_1)y_{1,i} - \{\hat{w}^b_{1,i}\mathbb{I}(A_{1,i}=a_1)-1\} \hat{Q}_{1}(\boldsymbol{h}_{1,i},a_1), $$
+for $a_1 \in \{-1,1\}$.
+```{r warning=FALSE, message=FALSE}
+Omega11 = mwK[R2[R1==1]==1]*(A1[R1+R2==2]+1)/2*(pseY1K)[R1+R2==2]*WA1[R2[R1==1]==1]-mwK[R2[R1==1]==1]*((A1[R1+R2==2]+1)*WA1[R2[R1==1]==1]/(2)-1)*m11K[R2[R1==1]==1]
+Omega10 = mwK[R2[R1==1]==1]*(1-A1[R1+R2==2])/2*(pseY1K)[R1+R2==2]*WA1[R2[R1==1]==1]-mwK[R2[R1==1]==1]*(1-(A1[R1+R2==2])*WA1[R2[R1==1]==1]/(2)-1)*m10K[R2[R1==1]==1]
+```
+
+
+The ACFBL estimator at stage 1 can be obtained by minimizing 
+$$
+\hat{E}_{i \in S_1}\left\{ \frac{r^{pse}_{1,i}}{\pi_{1,i}} \left( |\hat{\Omega}_{1,i}(1)|\phi\left[ \text{sgn}\{\hat{\Omega}_{1,i}(1)\}g_1(\boldsymbol{h}_{1,i})\right] + |\hat{\Omega}_{1,i}(-1)|\phi\left[ -\text{sgn}\{\hat{\Omega}_{1,i}(-1)\}g_1(\boldsymbol{h}_{1,i})\right ] \right) \right\} +\lambda^{opt}_1 \|g_1\|^2,
+$$
+
+
+We select the tuning parameter $\lambda_1^{opt}$ using 5-fold cross validation.
+```{r warning=FALSE, message=FALSE}
+X1 = cbind(1,X12)[(R1+R2)==2,]
+samplesize1 = dim(X1)[1]
+tp_rec = rep(0,10)
+for (i in 1:10){
+  tp = 2^(i-5)
+  val_rec= rep(0,5)
+  for (j in 1:5) {
+    valnum = (ceiling((j-1)*samplesize1/5)):(ceiling(j*samplesize1/5))
+    trainnum = setdiff(1:samplesize1, valnum)
+    ACFBLfun1 = function(eta){
+    mean(abs(Omega11[trainnum])*logisticloss(sgn(Omega11[trainnum])*X1[trainnum,]%*%eta)+abs(Omega10[trainnum])*logisticloss(-sgn(Omega10[trainnum])*X1[trainnum,]%*%eta) + tp*(X1[trainnum,]%*%eta)^2 )}
+    ACFBLcoe1 <- optim(par = c(1,-1),ACFBLfun1,control = list(maxit = 2000))$par
+    A1optACFBL <- ifelse(ACFBLcoe1[1]+ACFBLcoe1[2]*X12[R1+R2==2][valnum]>0,1,-1)
+    val_rec[j] = mean( (-5+A1optACFBL*2*(-X12[(R1+R2)==2][valnum]+1.5)+2*X11[(R1+R2)==2][valnum]^2+X12[(R1+R2)==2][valnum]+A2optACFBL*(X22[(R1+R2)==2][valnum]-A1optACFBL+1)+2*X12[(R1+R2)==2][valnum]-2*X21[(R1+R2)==2][valnum]^2)*mwK[R2[R1==1]==1][valnum])
+  }
+  tp_rec[i] = mean(val_rec)
+}
+2^(which.max(tp_rec)-5)
+```
+The selected tuning parameter $\lambda_1$ is 8.
+
+The stage-1 ACFBL estimator can be obtained with the selected tuning parameter $\lambda_1^{opt}$.
+```{r warning=FALSE, message=FALSE}
+ACFBLfun1 = function(eta){
+  mean(abs(Omega11)*logisticloss(sgn(Omega11)*X1%*%eta)+abs(Omega10)*logisticloss(-sgn(Omega10)*X1%*%eta) + 8*(X1%*%eta)^2 )}
+ACFBLcoe1 <- optim(par = c(1,-1),ACFBLfun1,control = list(maxit = 2000))$par
+ACFBLcoe1
+```
+The estimated optimal decision rule at stage 1 is $\mathbb{I}(0.1781992 -0.1521434 X_{1,2}\geq 0)$.
+
+# Evaluation of the estimated optimal DTR
+
+We evaluate the estimated optimal DTRs through the correct classification rate and the value of the estimated DTR. 
+
+```{r warning=FALSE, message=FALSE}
+# The assigned treatment 
+a1opt <- ifelse((ACFBLcoe1[2]*X12+ACFBLcoe1[1])>0,1,-1)
+a2opt <- ifelse((ACFBLcoe2[1] + ACFBLcoe2[2]*a1opt + ACFBLcoe2[3]*X22)>0,1,-1)
+# The correct classification rate for both stages
+Ta1opt <- ifelse((-1*X12+1)>0, 1, -1)
+Ta2opt <- ifelse((1-A1+X22)>0, 1, -1)
+sum((a1opt==Ta1opt)&(a2opt==Ta2opt))/N
+# The mean of outcome under the estimated optimal regime
+mean( (-5+a1opt*2*(-X12+1.5)+2*X11^2+X12+a2opt*(X22-a1opt+1)+2*X12-2*X21^2))
+```
+
+The correct classification rate and value of the estimated regime in this example are $91.1\%$ and $1.858562$, respectively.
+
+
