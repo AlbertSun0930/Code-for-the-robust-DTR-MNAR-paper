@@ -12,7 +12,7 @@
 <meta name="author" content="Jian Sun" />
 
 
-<title>Tutorial for the implement of the CFBL and the ACFBL methods in the single-stage scenario</title>
+<title>Tutorial for the implementation of the CFBL and the ACFBL methods in the single-stage scenario</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -349,8 +349,8 @@ display: none;
 
 
 
-<h1 class="title toc-ignore">Tutorial for the implement of the CFBL and
-the ACFBL methods in the single-stage scenario</h1>
+<h1 class="title toc-ignore">Tutorial for the implementation of the CFBL
+and the ACFBL methods in the single-stage scenario</h1>
 <h4 class="author">Jian Sun</h4>
 
 </div>
@@ -358,18 +358,19 @@ the ACFBL methods in the single-stage scenario</h1>
 
 <p>This is a quick tutorial to demonstrate how to implement the
 covariate functional balancing learning (CFBL) and the augmented
-covariate functional balancing learning (ACFBL) approaches proposed by
-‘Robust estimation of optimal dynamic treatment regimes with
-nonignorable missing covariates’ in the single-stage scenario.</p>
+covariate functional balancing learning (ACFBL) estimators in the
+single-stage scenario proposed in the manuscript ‘Robust estimation of
+optimal dynamic treatment regimes with nonignorable missing covariates’
+by Sun et al. (2025).</p>
 <div id="preliminary" class="section level1">
 <h1>Preliminary</h1>
-<p>This turtorial is based on R version 4.3.2. It requires the R
-packages ‘MASS’, ‘gss’, ‘ATE.ncb’, and ‘optimization’.</p>
+<p>This tutorial is based on R version 4.3.2. It requires the R packages
+‘MASS’, ‘gss’, ‘ATE.ncb’, and ‘optimization’.</p>
 </div>
 <div id="data-generation" class="section level1">
 <h1>Data Generation</h1>
-<p>A dataset was simulated based on the data generating mechanism
-described in the Simulation 1 of ‘Robust estimation of optimal dynamic
+<p>A dataset was simulated based on the data-generating mechanism
+described in Simulation 1 of ‘Robust estimation of optimal dynamic
 treatment regimes with nonignorable missing covariates’. There were two
 covariates <span class="math inline">\(X_{1,1}\)</span> and <span class="math inline">\(X_{1,2}\)</span>. <span class="math inline">\(X_{1,2}\)</span> was partially observed and its
 missingness indicator is <span class="math inline">\(R_1\)</span>. The
@@ -378,8 +379,8 @@ P(R_1=1) = [1+\exp(-3+X_{1,2})]^{-1}
 \]</span> In such cases, <span class="math inline">\(R_1\)</span> was
 only directly associated with the value of <span class="math inline">\(X_{1,2}\)</span>, thus <span class="math inline">\(X_{1,2}\)</span> was nonignorably missing, and the
 future-independent missingness assumption held.</p>
-<p>We simulated 2000 patients. Below are the first six rows of the
-simulated data.</p>
+<p>We simulated data for 2000 patients. Below are the first six rows of
+the simulated data.</p>
 <pre><code>##          X11       X12 R1 A1         Y1
 ## 1  0.7121904 1.5871079  1 -1  1.7117881
 ## 2  0.3296945 1.3674032  1 -1  0.3791493
@@ -393,8 +394,8 @@ simulated data.</p>
 <p>Since the future-independent missingness assumption holds in this
 simulated data, we can obtain unbiased estimates of optimal treatment
 regimes through complete cases.</p>
-<div id="estimation-of-the-covariate-funtional-balancing-weights" class="section level2">
-<h2>Estimation of the covariate funtional balancing weights</h2>
+<div id="estimation-of-the-balancing-weights" class="section level2">
+<h2>Estimation of the balancing weights</h2>
 <p>We estimate the covariate functional balancing weights (<span class="math inline">\(\hat{w}^b_1\)</span>) with R package “ATE.ncb” (<a href="https://github.com/raymondkww/ATE.ncb" class="uri">https://github.com/raymondkww/ATE.ncb</a>).</p>
 <pre class="r"><code>FA1t &lt;- ifelse(A1&gt;0,A1,0)
 FA1t &lt;- FA1t[R1==1]
