@@ -1,5 +1,5 @@
 ---
-title: "Tutorial for the implement of the CFBL and the ACFBL methods in the single-stage scenario"
+title: "Tutorial for the implementation of the CFBL and the ACFBL methods in the multiple-stage scenario"
 author: "Jian Sun"
 output:
   html_document: null
@@ -8,13 +8,13 @@ output:
 ---
 
 
-This is a quick tutorial to demonstrate how to implement the augmented covariate functional balancing learning (ACFBL) approaches proposed by 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates' in the multiple-stage scenario.
+This is a quick tutorial to demonstrate how to implement the augmented covariate functional balancing learning (ACFBL) estimator in the multiple-stage scenario proposed in the manuscript 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates' by Sun et al. (2025).
 
 
 
 
 # Preliminary
-This turtorial is based on R version 4.3.2. It requires the R packages 'MASS', 'gss', 'ATE.ncb', and 'optimization'. 
+This tutorial is based on R version 4.3.2. It requires the R packages 'MASS', 'gss', 'ATE.ncb', and 'optimization'. 
 
 ```{r warning=FALSE, message=FALSE, include=FALSE}
 library(optimization)
@@ -36,13 +36,13 @@ expit <- function(x){
 
 # Data Generation
 
-A dataset was simulated based on the data generating mechanism described in the Simulation 2 of 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'. 
-There are two stages and two variables in each stage, denoted as {$X_{i,1},X_{i,2},A_{i},Y_{i}$} for stage $i=1,2$. $X_{1,2}$ and $X_{2,2}$ are partially observed, and their missing indicators are $R_1$ and $R_2$, respectively. The missing probability models are as follows:
+A dataset was simulated based on the data-generating mechanism described in Simulation 2 of 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'. 
+There are two stages and two covariates in each stage, denoted as {$X_{t,1},X_{t,2},A_{t},Y_{t}$} for stage $t=1,2$. $X_{1,2}$ and $X_{2,2}$ are partially observed, and their missing indicators are $R_1$ and $R_2$, respectively. The missing probability models are as follows:
 $$
 P(R_1=1) = [1+\exp(-3+X_{1,2})]^{-1}\\
 P(R_2=1) = [1+\exp(-1+A_1-Y_1+2X_{2,1}^2-X_{2,2})]^{-1}
 $$
-In such cases, $R_1$ is directly related to $X_{1,2}$, and $R_2$ is directly related to $X_{2,2}$, indicating that $X_{1,2}$ and $X_{2,2}$ are missing not at random. The assumption of future-independent missingness also holds in this scenario. The missing indicator for the pseudo-outcome in stage 1 is also $R_2$. Given that $Y^{pse}_1 = -2-A_1+X_{2,2}+2X_{1,2}-2X_{2,1}^2 + Y_1$, $P(R_2=1)$ is also equal to $[1+\exp(-1+2X_{1,2}-Y^{pse}_1)]^{-1}$.
+In such cases, $R_1$ is directly related to $X_{1,2}$, and $R_2$ is directly related to $X_{2,2}$, indicating that $X_{1,2}$ and $X_{2,2}$ are nonignorably missing. The assumption of future-independent missingness also holds in this scenario. The missing indicator for the pseudo-outcome in stage 1 is also $R_2$. Given that $Y^{pse}_1 = -2-A_1+X_{2,2}+2X_{1,2}-2X_{2,1}^2 + Y_1$, $P(R_2=1)$ is also equal to $[1+\exp(-1+2X_{1,2}-Y^{pse}_1)]^{-1}$.
 
 
 ```{r warning=FALSE, message=FALSE, echo=FALSE}
@@ -65,7 +65,7 @@ A2 <- ifelse(P_A2>runif(N),1,-1)
 Y2 <- -3+A2*(X22-A1+1)+2*X12-2*X21^2+rnorm(N,0,1)
 ```
 
-We simulated 2000 patients. Below are the first six rows of the simulated data.
+We simulated data for 2000 patients. Below are the first six rows of the simulated data.
 ```{r warning=FALSE, message=FALSE, echo=FALSE}
 head(data.frame(cbind(X11,X12,R1,A1,Y1,X21,X22,R2,A2,Y2)))
 ```
@@ -75,11 +75,11 @@ head(data.frame(cbind(X11,X12,R1,A1,Y1,X21,X22,R2,A2,Y2)))
 
 ## Stage 2
 
-Since the future-independent missingness assumption holds in stage 2 of this simulated data, we can obtain unbiased estimates of optimal treatment regimes through complete cases.
+Since the future-independent missingness assumption holds in stage 2 of this simulated data, we can obtain unbiased estimates of optimal treatment regimes through the complete-case sample.
 
 
-### Estimation of the covariate funtional balancing weights at stage 2
-We estimate the covariate functional balancing weights ($\hat{w}^b_1$) with R package "ATE.ncb" (https://github.com/raymondkww/ATE.ncb).
+### Estimation of the balancing weights at stage 2
+We estimate the balancing weights ($\hat{w}^b_2$) using the R package "ATE.ncb" (https://github.com/raymondkww/ATE.ncb).
 ```{r warning=FALSE, message=FALSE}
 CCdata2 <- data.frame(cbind(A1,X12,A2,X21,X22,Y2)[R1+R2==2,])
 Kfit2 <- ssanova(Y2~A2*A1+X12+X21+A2*X22, data = CCdata2)
@@ -103,7 +103,7 @@ WA2 <- ifelse(A2[R1+R2==2]==1,fit21,fit20)
 ```
 
 ### Estimation of the outcome mean regression model at stage 2
-We estimate the outcome mean regression models for different treatment groups ($\hat{Q}_{2,a_2}(\boldsymbol{h}_2)$) using smoothing spline method with R package gss. Denote $\hat{Q}_{2}(\boldsymbol{h}_2,a_2) = \hat{Q}_{2,a_2}(\boldsymbol{h}_2)$.
+We estimate the outcome mean regression models for different treatment groups ($\hat{Q}_{2,a_2}(\boldsymbol{h}_2)$) using the smoothing spline method with the R package gss. Denote $\hat{Q}_{2}(\boldsymbol{h}_2,a_2) = \hat{Q}_{2,a_2}(\boldsymbol{h}_2)$.
 ```{r warning=FALSE, message=FALSE}
 CCdata2 <- data.frame(cbind(A1,X12,A2,X21,X22,Y2)[R1+R2==2,])
 Kfit2 <- ssanova(Y2~A2*A1+X12+X21+A2*X22, data = CCdata2)
@@ -165,7 +165,7 @@ The estimated optimal decision rule at stage 2 is $\mathbb{I}(0.4392279 -0.44275
 
 ## Stage 1
 
-The estimated pseudo-outcome at stage 1 is determined by the estimated outcome mean model at stage 2. Since the assumption of future-independent missingness holds, we can obtain unbiased estimates of the Q-function at stage 1 using the records where $R_1=1$. However, because $Y_{pse,1}$ is calculated based on $X_{2,2}$, it may still exhibit missing values when $R_1=0$. The missing indicator for $Y_{pse,1}$ is $\mathbb{I}(R_1+R_2 = 2)$. The first six rows of the variables considered for the stage 1 Q-function are listed below:
+The estimated pseudo-outcome at stage 1 is determined by the estimated outcome mean model at stage 2. Since the assumption of future-independent missingness holds, we can obtain unbiased estimates of the Q-function at stage 1 using the records where $R_1=1$. However, because $Y_{pse,1}$ is calculated based on $X_{2,2}$, it may still exhibit missing values when $R_1=1$. The missing indicator for $Y_{pse,1}$ is $\mathbb{I}(R_1+R_2 = 2)$. The first six rows of the variables considered for the stage 1 Q-function are listed below:
 
 ```{r warning=FALSE, message=FALSE}
 A2optACFBL <- ifelse(ACFBLcoe2[1]+ACFBLcoe2[2]*A1+ACFBLcoe2[3]*X22>0,1,-1)
@@ -176,9 +176,9 @@ pseR1 = ifelse(R1+R2==2,1,0)
 head(data.frame(cbind(X11,X12,A1,pseY1K,pseR1))[R1+R2==2,])
 
 ```
-### Estimation of the pseudo-outcome missingness propensity model 
+### Estimation of the  missingness propensity of the pseudo-outcome 
 
-To estimate the pseudo-outcome missingness propensity model, we should firstly get the kernel regression estimate of $\exp\{\eta_1(x_{1,2})\}$ for a given $\gamma_1$. 
+To estimate the missingness propensity of the pseudo-outcome using the semiparametric model with $\Gamma_{1,\gamma_1}(y_1^{pse})=\gamma_1y^{pse}_1$, we should first obtain the kernel regression estimate of $\exp\{\eta_1(x_{1,2})\}$ for a given $\gamma_1$. 
 
 ```{r warning=FALSE, message=FALSE}
 h <- 1.5*sd(X12[R1==1])*length(X12[R1==1])^(-1/3)
@@ -206,7 +206,7 @@ gamma1K <- optim_nm(lossK, start = startgamma,exit=200,tol=1e-2)$par
 
 ### Estimation of the outcome mean models at stage 1
 
-We can obtain the estimated missingness propensity model with the estimated $\gamma_1$. And then use the inverse propensity weighting method to get the outcome mean models in stage 1.
+We can obtain the estimated missingness propensity model with the estimated $\gamma_1$, and then apply the inverse probability weighting to fit the outcome mean models in stage 1 with smoothing splines.
 ```{r warning=FALSE, message=FALSE}
 mwK = rep(0,sum(R1))
 mwK[pseR1[R1==1]==1] = (1+exp(gamma1K*pseY1K[R1+R2==2])*expsuK(X12[R1+R2==2],gamma1K))
@@ -219,7 +219,7 @@ CCdata1$A1 = 1
 m11K <- predict(Kfit1, newdata = CCdata1 )
 ```
 
-### Estimation of the covariate functional balancing weights at stage 1
+### Estimation of the  balancing weights at stage 1
 
 ```{r warning=FALSE, message=FALSE}
 FA1t <- ifelse(A1>0,A1,0)
