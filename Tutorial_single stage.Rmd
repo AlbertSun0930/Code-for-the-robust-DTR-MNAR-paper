@@ -1,5 +1,5 @@
 ---
-title: "Tutorial for the implement of the CFBL and the ACFBL methods in the single-stage scenario"
+title: "Tutorial for the implementation of the CFBL and the ACFBL methods in the single-stage scenario"
 author: "Jian Sun"
 output:
   html_document: null
@@ -8,13 +8,13 @@ output:
 ---
 
 
-This is a quick tutorial to demonstrate how to implement the covariate functional balancing learning (CFBL) and the augmented covariate functional balancing learning (ACFBL) approaches proposed by 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates' in the single-stage scenario.
+This is a quick tutorial to demonstrate how to implement the covariate functional balancing learning (CFBL) and the augmented covariate functional balancing learning (ACFBL) estimators in the single-stage scenario proposed in the manuscript 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'  by Sun et al. (2025).
 
 
 
 
 # Preliminary
-This turtorial is based on R version 4.3.2. It requires the R packages 'MASS', 'gss', 'ATE.ncb', and 'optimization'. 
+This tutorial is based on R version 4.3.2. It requires the R packages 'MASS', 'gss', 'ATE.ncb', and 'optimization'. 
 
 ```{r warning=FALSE, message=FALSE, include=FALSE}
 library(optimization)
@@ -36,7 +36,7 @@ expit <- function(x){
 
 # Data Generation
 
-A dataset was simulated based on the data generating mechanism described in the Simulation 1 of 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'. 
+A dataset was simulated based on the data-generating mechanism described in Simulation 1 of 'Robust estimation of optimal dynamic treatment regimes with nonignorable missing covariates'. 
 There were two covariates $X_{1,1}$ and $X_{1,2}$. $X_{1,2}$ was partially observed and its missingness indicator is $R_1$.
 The missing probability models are as follows:
 $$
@@ -57,7 +57,7 @@ A1 <- ifelse(P_A1>runif(N),1,-1)
 Y1 <- -2+2*A1*(-X12+1)+2*X11^2+X12+rnorm(N,0,1)
 ```
 
-We simulated 2000 patients. Below are the first six rows of the simulated data.
+We simulated data for 2000 patients. Below are the first six rows of the simulated data.
 ```{r warning=FALSE, message=FALSE, echo=FALSE}
 head(data.frame(cbind(X11,X12,R1,A1,Y1)))
 ```
@@ -68,7 +68,7 @@ head(data.frame(cbind(X11,X12,R1,A1,Y1)))
 Since the future-independent missingness assumption holds in this simulated data, we can obtain unbiased estimates of optimal treatment regimes through complete cases.
 
 
-## Estimation of the covariate funtional balancing weights 
+## Estimation of the  balancing weights 
 We estimate the covariate functional balancing weights ($\hat{w}^b_1$) with R package "ATE.ncb" (https://github.com/raymondkww/ATE.ncb).
 ```{r warning=FALSE, message=FALSE}
 FA1t <- ifelse(A1>0,A1,0)
